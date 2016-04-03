@@ -1,2 +1,3 @@
-* Assignement for the Coursera ML course from the John Hopkins Data science specialization
+* Pratical Machine Learning final project (John Hopkins Data science specialization)
 
+You will find the generated html at: http://dickoa.github.io/courseraml/
