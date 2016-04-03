@@ -1,0 +1,220 @@
+#+TITLE: Practical Machine Learning : Project
+#+AUTHOR: Ahmadou H. Dicko
+#+EMAIL: dicko dot ahmadou at gmail dot com
+#+SETUPFILE: theme-readtheorg.setup
+#+OPTIONS: ':nil *:t -:t ::t <:t H:3 \n:nil ^:t arch:headline toc:nil
+#+PROPERTY: header-args:R  :session *R* :exports both :cache yes
+
+* Overview
+This document is the main project of the pratical machine learning course of the data science specialization.
+The document was built using emacs Org-mode Babel and exported to html and 
+equivalent Rmarkdown file was also generated because it was required for grading purpose. 
+
+* Background
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount 
+of data about personal activity relatively inexpensively. These type of devices are part of the quantified 
+self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, 
+to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify
+how much of a particular activity they do, but they rarely quantify how well they do it. 
+In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. 
+They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+More information is available from the website here: http://groupware.les.inf.puc-rio.br/har 
+(see the section on the Weight Lifting Exercise Dataset).
+
+* Package used for the analysis
+
+We used the following package for this analysis
+
+#+begin_src R :exports both :results silent
+library(ggplot2)
+library(mlr)
+library(dplyr)
+library(curl)
+library(lubridate)
+library(corrplot)
+#+end_src
+
+We can highlight in particular the use of the ~mlr~ R package instead of ~caret~. 
+The ~mlr~ package was chosen because of the cleaner interface and capabilities similar to ~caret~.
+
+* Reading the data
+
+Both training and testing data were pulled from their original url 
+
+#+begin_src R :exports both :results output 
+url_train <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+url_test <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+#+end_src
+
+Data were downloaded once and at each run we test if the file is in right folder
+
+#+begin_src R :exports both :results output 
+if (!file.exists("data/train.csv"))
+    curl_download(url_train, destfile = "data/train.csv", quiet = TRUE)
+
+if (!file.exists("data/test.csv"))
+    curl_download(url_test, destfile = "data/test.csv", quiet = TRUE)
+#+end_src
+
+We then read the data using the ~read.csv~ function.
+
+#+begin_src R :exports both :results output 
+train <- read.csv("data/train.csv",
+                 stringsAsFactors = FALSE,
+                 na.strings = c("#DIV/0!", NA),
+                 row.names = 1)
+
+test <- read.csv("data/test.csv",
+                stringsAsFactors = FALSE,
+                na.strings = c("#DIV/0!", NA),
+                row.names = 1)
+#+end_src
+
+* Cleaning the data
+
+Before fitting a model and predicting user movement, we need to create some features and 
+remove some of them.
+
+** Creating new features and remove all NA features
+
+In this step we created the hour of the day when the movement were recorded and we turned
+all the character to factor.
+
+#+begin_src R :exports both :results output 
+train$raw_timestamp_part_1 <- as.POSIXct(train$raw_timestamp_part_1, origin = "1970-01-01")
+test$raw_timestamp_part_1 <- as.POSIXct(test$raw_timestamp_part_1, origin = "1970-01-01")
+train$hour <- hour(train$raw_timestamp_part_1)
+test$hour <- hour(test$raw_timestamp_part_1)
+train$classe <- factor(train$classe)
+train$user_name <- factor(train$user_name)
+test$user_name <- factor(test$user_name)
+train$new_window <- as.integer(factor(train$new_window)) - 1
+test$new_window <- as.integer(factor(test$new_window)) - 1
+#+end_src
+
+We also removed all null column (full of missing values) and kept the hour instead of the timestamp.
+
+#+begin_src R :exports both :results output 
+ind <- sapply(train, function(x) all(is.na(x)))
+train <- train[, !ind]
+test <- test[, !ind]
+toremove <- c("raw_timestamp_part_1",
+             "raw_timestamp_part_2",
+             "cvtd_timestamp")
+ind <- !names(train) %in% toremove
+train <- train[, ind]
+test <- test[, ind]
+#+end_src
+
+** Create a task a remove near constant features
+
+In order to use the ~mlr~ package, we need to create a ~task~.
+In this analysis, we are doing classifcation therefore we can use the ~makeClassifTask~ function.
+Constant features were also removed from the rest of the analysis.
+
+#+begin_src R :exports both :results output
+task <- makeClassifTask(id = "fitbits_pred", data = train, target = "classe")
+task <- removeConstantFeatures(task, perc = 0.05)
+task
+#+end_src
+
+** Filter feature a remove non important variables
+
+We filtered the data and kept the 25% most important variable based on the information gain of each variable (based on a randomForest model). 
+
+#+begin_src R :exports both :results output
+  fv <- generateFilterValuesData(task, method = "information.gain")
+  task <- filterFeatures(task, fval = fv, perc = 0.25, mandatory.feat = c("user_name", "hour"))
+  task
+#+end_src
+
+** Check the final and most important variables
+In order to check the final variable, a corrplot was used. The first and last (15) features are factors, they were thus removed 
+before computing the linear correlation. 
+
+#+begin_src R :exports both :results graphics :file ./fig/corplot.png
+corrplot(cor(getTaskData(task)[-c(1, 15)], use = "pairwise"))
+#+end_src
+
+Based on the graph, we just have two variables that are highly correlated (~accel_belt_z~ and ~roll_belt~).
+
+
+* RandomForest model to predict
+For this analysis we decided to use ~randomForest~ to predict user movement because of the
+high accuracy and robustness of this model which an enhanced version of the popular bagging.
+
+** Model tuning and model evaluation
+We used a 10-fold cross validation to select the best parameters and evaluation the model.
+In the RandomForest model, the two most important parameters are the number of variable that sample
+at each run of the algorithm (~mtry~) and the number of tree since when use regression trees as base learner (~ntree~).
+
+
+*** Set the learner
+We set the learner using makeLearner function
+
+#+begin_src R :exports code :results output
+rflrn <- makeLearner("classif.randomForest")
+#+end_src
+
+
+*** Cross-validation to select hyperparameters and evaluate the model
+A 10-fold cross-validation is used to select the best parameters and evaluate
+the model for this parameters
+
+#+begin_src R :exports code :results silents :eval no
+set.seed(1)
+rdesc <- makeResampleDesc("CV",
+                         iters = 10,
+                         predict = "test")
+ps <- makeParamSet(makeIntegerParam("mtry", lower = 2, upper = 10),
+                  makeIntegerParam("ntree", lower = 500, upper = 5000))
+ctrl <- makeTuneControlGrid()
+tune <- tuneParams(rflrn, task = task,
+                 resampling = rdesc,
+                 par.set = ps,
+                 control = ctrl)
+#+end_src
+
+The model has very high predictive power, with an misclassification error rates of 
+~0.06%~ based on the 10-fold cross-validation. The optimal ~mtry~ and ~ntree~ are respectively 6 and 5000.
+
+#+begin_src R :exports results :results output
+  tune <- readRDS("tuning.rds")
+  tune
+#+end_src
+
+** Prediction 
+We can then set the parameters and predict on both training and testing set
+#+begin_src R :exports both :results output :cache yes
+  rflrn_tune <- setHyperPars(rflrn, par.vals = tune$x)
+  mod <- train(rflrn_tune, task)
+  mod
+#+end_src
+
+*** Prediction on training set
+
+We have a perfect prediction on training set, which is not a surprise, since the cross-validated
+misclassification error is close to 0.
+
+#+begin_src R :exports both :results output :cache yes
+predtrain <- predict(mod, task = task)
+table(predtrain$data[,-1])
+#+end_src
+
+A misclassification error of 0
+
+#+begin_src R :exports both :results output
+performance(predtrain)
+#+end_src
+
+
+*** Prediction on testing set
+Finally we can predict on the testing set and based on the cross-validated misclassification error, 
+we can also expect some good prediction.
+
+#+begin_src R :exports both :results output
+predtest <- predict(mod$learner.model, newdata = test)
+predtest
+#+end_src
+
+
